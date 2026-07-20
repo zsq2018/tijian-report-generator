@@ -90,32 +90,50 @@ def _find_phone(doc):
 
 def _find_date(doc):
     """体检日期：关键词和日期可能在不同段落"""
+    result = _search_regex(doc, r'体检日期\s*[：:\t]?\s*(\d{4}[-/]\d{1,2}[-/]\d{1,2})')
+    if result and result[0]:
+        return result
+    # 文本框搜索
+    result = _search_textbox_xml(doc, '体检日期', r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})')
+    if result: return result
+    # fallback：关键词所在段落附近搜索日期
     for i, para in enumerate(doc.paragraphs):
-        m = re.search(r'体检日期\s*[：:\t]?\s*(\d{4}[-/]\d{1,2}[-/]\d{1,2})', para.text)
-        if m:
-            return m.group(1), f"段落{i}", para.text.strip()[:80]
-    for i, para in enumerate(doc.paragraphs):
-        if '体检日期' in para.text:
-            for j in range(i, min(i + 4, len(doc.paragraphs))):
-                m = re.search(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})', doc.paragraphs[j].text)
+        if '体检日期' not in para.text: continue
+        for j in range(i, min(i + 4, len(doc.paragraphs))):
+            m = re.search(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})', doc.paragraphs[j].text)
+            if m:
+                return m.group(1), f"段落{j}", doc.paragraphs[j].text.strip()[:80]
+    for ti, table in enumerate(doc.tables):
+        for ri, row in enumerate(table.rows):
+            for ci, cell in enumerate(row.cells):
+                if '体检日期' not in cell.text: continue
+                m = re.search(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})', cell.text)
                 if m:
-                    return m.group(1), f"段落{j}（关键词在段落{i}）", doc.paragraphs[j].text.strip()[:80]
+                    return m.group(1), f"表格{ti}行{ri}列{ci}", cell.text.strip()[:80]
     return _search_regex(doc, r'体检日期\s*[：:\t]?\s*(\d{4}[-/]\d{1,2}[-/]\d{1,2})')
 
 
 def _find_time(doc):
     """检查时间：关键词和时间可能在不同位置"""
     pattern = r'(?:检查日期|报告日期)\s*[：:\t]?\s*\d{4}[-/]\d{1,2}[-/]\d{1,2}\s+(\d{1,2}:\d{2})'
+    # 段落搜索
     for i, para in enumerate(doc.paragraphs):
         m = re.search(pattern, para.text)
         if m:
             return m.group(1), f"段落{i}", para.text.strip()[:80]
+    # 表格搜索
     for ti, table in enumerate(doc.tables):
         for ri, row in enumerate(table.rows):
             for ci, cell in enumerate(row.cells):
                 m = re.search(pattern, cell.text)
                 if m:
                     return m.group(1), f"表格{ti}行{ri}列{ci}", cell.text.strip()[:80]
+    # 文本框搜索（通过XML）
+    result = _search_textbox_xml(doc, '检查时间', r'(\d{1,2}:\d{2})')
+    if result: return result
+    result = _search_textbox_xml(doc, '检查日期', r'(\d{1,2}:\d{2})')
+    if result: return result
+    # fallback
     for label in ['检查日期', '报告日期']:
         for i, para in enumerate(doc.paragraphs):
             if label in para.text:
@@ -438,6 +456,34 @@ def _search_regex(doc, pattern):
                 if m:
                     return m.group(1), f"表格{ti}行{ri}列{ci}", cell.text.strip()[:80]
     return None, None, None
+
+
+def _search_textbox_xml(doc, keyword, value_pattern):
+    """在文本框（XML w:txbxContent）中搜索关键词后的值"""
+    ns_w = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    all_telems = []
+    for txbx in doc._element.body.iter(f'{{{ns_w}}}txbxContent'):
+        for t in txbx.iter(f'{{{ns_w}}}t'):
+            all_telems.append(t)
+    for section in doc.sections:
+        for hf_obj in [section.header, section.first_page_header, section.even_page_header,
+                        section.footer, section.first_page_footer, section.even_page_footer]:
+            if hf_obj is None: continue
+            for txbx in hf_obj._element.iter(f'{{{ns_w}}}txbxContent'):
+                for t in txbx.iter(f'{{{ns_w}}}t'):
+                    all_telems.append(t)
+    if not all_telems:
+        return None
+
+    joined = ''.join(t.text or '' for t in all_telems)
+    pos = joined.find(keyword)
+    if pos < 0:
+        return None
+    tail = joined[pos:]
+    m = re.search(value_pattern, tail)
+    if m:
+        return m.group(1), '文本框', tail[:80]
+    return None
 
 
 # ============================================================
@@ -880,14 +926,28 @@ def step2_replace(doc_path, dry_run=False, replacements=None):
                     age_old = m_old.group(1)
                     age_new = m_new.group(1)
 
-    # 对 body 做跨 <w:t> 标签替换（处理被 XML 拆散的文本，如日期）
+    # 对所有区域做跨 <w:t> 标签替换（处理被 XML 拆散的文本，如日期/年龄）
     if not dry_run and replacements:
         ns_t = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t'
         ns_p = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p'
+
+        # 收集所有要遍历的根元素：正文 + 页眉页脚的所有段落
+        all_p_elems = []
+        all_p_elems.extend(doc._element.body.iter(ns_p))
+        for s in doc.sections:
+            for hn in ['header','footer','first_page_header','even_page_header','first_page_footer','even_page_footer']:
+                hf = getattr(s, hn, None)
+                if hf:
+                    all_p_elems.extend(hf._element.iter(ns_p))
+        # 同时也遍历所有文本框内的 w:p（正文+页眉页脚中）
+        for root in [doc._element.body] + [getattr(s, hn)._element for s in doc.sections for hn in ['header','footer','first_page_header','even_page_header','first_page_footer','even_page_footer'] if getattr(s, hn, None)]:
+            for txbx in root.iter('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}txbxContent'):
+                all_p_elems.extend(txbx.iter(ns_p))
+
         for label, old, new in replacements:
             if not old or old == new: continue
             if label == '身份证号': continue  # 身份证号只做关键词精准替换，不跨标签全局替换
-            for p_elem in doc._element.body.iter(ns_p):
+            for p_elem in all_p_elems:
                 t_elems = list(p_elem.iter(ns_t))
                 if not t_elems: continue
                 joined = ''.join(t.text or '' for t in t_elems)
@@ -915,11 +975,22 @@ def step2_replace(doc_path, dry_run=False, replacements=None):
                         t_elems[end_t].text = (t_elems[end_t].text or '')[-remain:] if remain > 0 else ''
                     joined = ''.join(t.text or '' for t in t_elems)
                     pos = idx + len(new)
+        # 年龄单体回退：处理那些被拆成单个数字的年龄（如 5 和 2 在不同 <w:t> 中）
         if age_old and age_new:
+            all_t_elems = []
             for root in [doc._element.body] + [getattr(s, hn)._element for s in doc.sections for hn in ['header','footer','first_page_header','even_page_header','first_page_footer','even_page_footer'] if getattr(s, hn, None)]:
-                for t in root.iter(ns_t):
-                    if t.text and t.text.strip() == age_old: t.text = age_new
-                    if t.text and ('年龄'+age_old) in (t.text or ''): t.text = t.text.replace('年龄'+age_old, '年龄'+age_new)
+                all_t_elems.extend(list(root.iter(ns_t)))
+            # 已经过跨标签替换，此时如果还有 age_old 的单个数字残留，说明被分得太散
+            # 尝试找 "年龄X" 模式（X为单个数字，如"年龄5"）
+            for t in all_t_elems:
+                if not t.text: continue
+                # 替换 "年龄X" → "年龄新X" 对于单数字年龄
+                for i, ch in enumerate(age_old):
+                    prefix = '年龄' if i == 0 else ''
+                    old_ch = prefix + ch
+                    new_ch = prefix + age_new[i]
+                    if old_ch in t.text:
+                        t.text = t.text.replace(old_ch, new_ch)
 
     if dry_run:
         print("🔍 以上为预览，文件未被修改。")

@@ -2,10 +2,11 @@
 体检报告在线生成器 — Streamlit Web App
 在浏览器中填写信息，下载生成的 Word 体检报告
 """
-import os, sys, shutil, re, tempfile
+import os, sys, shutil, re, tempfile, io
 from datetime import date, datetime
 
 import streamlit as st
+import openpyxl
 
 from tihuan_tijian import (
     find_target, step2_replace,
@@ -108,7 +109,89 @@ st.set_page_config(
 )
 
 st.title("📋 体检报告生成器")
-st.markdown("填写下方信息（全部为必填），自动生成 Word 体检报告文件。")
+
+mode = st.radio("选择模式", ["📝 单人生成", "📦 批量生成（上传 Excel）"], horizontal=True)
+
+if mode == "📦 批量生成（上传 Excel）":
+    st.markdown("上传 Excel 文件（格式同 `人员信息模板.xlsx`），批量生成所有人的体检报告。")
+    uploaded = st.file_uploader("选择 Excel 文件", type=["xlsx", "xls"])
+
+    if uploaded:
+        wb = openpyxl.load_workbook(io.BytesIO(uploaded.read()))
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        if len(rows) < 2:
+            st.error("Excel 中没有数据（至少需要表头+一行数据）")
+            st.stop()
+
+        headers = [str(h).strip() if h else '' for h in rows[0]]
+        col_map = {
+            '姓名': 'name', '身份证号': 'idcard', '体检编码': 'number',
+            '身高': 'height', '体重': 'weight', '体重指数': 'bmi',
+            '收缩压': 'sbp', '舒张压': 'dbp', '电话': 'phone',
+            '体检日期': 'date', '检查时间': 'time',
+        }
+
+        persons = []
+        for row in rows[1:]:
+            if not row or all(v is None or str(v).strip() == '' for v in row):
+                continue
+            p = {}
+            for hi, h in enumerate(headers):
+                key = col_map.get(h)
+                if key and hi < len(row) and row[hi] is not None:
+                    val = str(row[hi]).strip()
+                    if val:
+                        p[key] = val
+            if 'name' not in p:
+                continue
+            # 自动计算年龄和性别
+            if 'idcard' in p:
+                p['age'] = calc_age(p['idcard'])
+                g = detect_gender(p['idcard'])
+                if g: p['gender'] = g
+            # 格式化数值
+            for k in ('height', 'weight', 'bmi'):
+                if k in p:
+                    try: p[k] = f"{float(p[k]):.2f}"
+                    except: pass
+            persons.append(p)
+
+        if not persons:
+            st.error("未能解析到有效的人员数据")
+            st.stop()
+
+        st.success(f"共解析到 {len(persons)} 人：{', '.join(p.get('name','') for p in persons)}")
+
+        # 确认按钮
+        if st.button("🚀 批量生成全部报告", use_container_width=True):
+            import zipfile
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+                prog = st.progress(0, text="正在生成...")
+                for idx, p in enumerate(persons):
+                    name = p.get('name', f'person_{idx+1}')
+                    prog.progress((idx) / len(persons), text=f"正在生成 {name}...")
+                    try:
+                        path = generate_report(p)
+                        with open(path, 'rb') as f:
+                            zf.writestr(f"{name}.docx", f.read())
+                        os.remove(path)
+                    except Exception as e:
+                        st.error(f"{name} 生成失败: {e}")
+                prog.progress(1.0, text="完成！")
+
+            st.success(f"✅ 已生成 {len(persons)} 份体检报告！")
+            st.download_button(
+                label="📥 下载全部报告（ZIP 打包）",
+                data=buf.getvalue(),
+                file_name="体检报告_批量.zip",
+                mime="application/zip",
+                use_container_width=True,
+            )
+
+elif mode == "📝 单人生成":
+    st.markdown("填写下方信息（全部为必填），自动生成 Word 体检报告文件。")
 
 with st.form("report_form"):
     col1, col2 = st.columns(2)
