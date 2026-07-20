@@ -86,6 +86,11 @@ def generate_report(person):
             continue
         if key == 'age':
             replacements.append((item.label, old_val + '岁', new_val + '岁'))
+            # 处理 "5 2 岁" 这种带空格的年龄（2位以上数字）
+            if len(old_val) >= 2 and len(new_val) >= 2:
+                replacements.append((item.label,
+                    old_val[0] + ' ' + old_val[1] + ' ' + '岁',
+                    new_val[0] + ' ' + new_val[1] + ' ' + '岁'))
         elif key == 'height':
             replacements.append((item.label, old_val + 'cm', new_val + 'cm'))
         elif key == 'weight':
