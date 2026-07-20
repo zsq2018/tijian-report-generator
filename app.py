@@ -154,11 +154,12 @@ if mode == "📦 批量生成（上传 Excel）":
                         p[key] = val
             if 'name' not in p:
                 continue
-            # 自动计算年龄和性别
+            # 自动计算年龄，性别如果Excel没填才从身份证自动判断
             if 'idcard' in p:
                 p['age'] = calc_age(p['idcard'])
-                g = detect_gender(p['idcard'])
-                if g: p['gender'] = g
+                if 'gender' not in p:
+                    g = detect_gender(p['idcard'])
+                    if g: p['gender'] = g
             # 格式化数值
             for k in ('height', 'weight', 'bmi'):
                 if k in p:
