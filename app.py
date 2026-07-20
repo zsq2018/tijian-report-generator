@@ -1,0 +1,229 @@
+"""
+体检报告在线生成器 — Streamlit Web App
+在浏览器中填写信息，下载生成的 Word 体检报告
+"""
+import os, sys, shutil, re, tempfile
+from datetime import date, datetime
+
+import streamlit as st
+
+from tihuan_tijian import (
+    find_target, step2_replace,
+    _find_idcard, _find_phone, _find_date, _find_time, _find_gender,
+    replace_gender_in_doc,
+    CUSTOM_ITEMS, ALL_ITEMS
+)
+
+# ─── 路径 ─────────────────────────────────────────────
+WORK_DIR = os.path.dirname(os.path.abspath(__file__))
+TEMPLATE = os.path.join(WORK_DIR, "王显勇.docx")
+
+
+# ─── 工具函数 ─────────────────────────────────────────
+def calc_age(idcard):
+    """从身份证号计算年龄"""
+    m = re.match(r'\d{6}(\d{4})(\d{2})(\d{2})\d{3}[\dXx]', str(idcard))
+    if not m:
+        return ''
+    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    today = date.today()
+    age = today.year - y
+    if (today.month, today.day) < (mo, d):
+        age -= 1
+    return str(age)
+
+
+def detect_gender(idcard):
+    """从身份证号判断性别：17位奇男偶女"""
+    m = re.match(r'\d{17}[\dXx]', str(idcard))
+    if not m:
+        return None
+    digit = str(idcard)[16]
+    if digit in 'Xx':
+        return None
+    return '女' if int(digit) % 2 == 0 else '男'
+
+
+def generate_report(person):
+    """生成体检报告，返回 docx 文件路径"""
+    out = os.path.join(WORK_DIR, f"_temp_{person.get('name','temp')}.docx")
+    shutil.copy(TEMPLATE, out)
+
+    import docx
+    doc = docx.Document(out)
+
+    # 构建替换数据
+    new_vals = {}
+    for item in ALL_ITEMS:
+        val = person.get(item.key)
+        if val:
+            new_vals[item.key] = str(val)
+
+    # 性别替换
+    gender = person.get('gender')
+    if gender:
+        old_gen, _, _ = _find_gender(doc)
+        if old_gen and old_gen != gender:
+            count = replace_gender_in_doc(doc, old_gen, gender)
+            if count > 0:
+                backup = out.replace('.docx', f'_backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.docx')
+                shutil.copy(out, backup)
+                doc.save(out)
+                doc = docx.Document(out)
+
+    # 标准替换
+    key_to_item = {it.key: it for it in ALL_ITEMS}
+    replacements = []
+    for key, new_val in new_vals.items():
+        if key == 'gender':
+            continue
+        item = key_to_item.get(key)
+        if item is None:
+            continue
+        old_val, _, _ = find_target(doc, item)
+        if old_val is None:
+            continue
+        if key == 'age':
+            replacements.append((item.label, old_val + '岁', new_val + '岁'))
+        elif key == 'height':
+            replacements.append((item.label, old_val + 'cm', new_val + 'cm'))
+        elif key == 'weight':
+            replacements.append((item.label, old_val + 'Kg', new_val + 'Kg'))
+        elif key in ('sbp', 'dbp'):
+            replacements.append((item.label, old_val + 'mmHg', new_val + 'mmHg'))
+        else:
+            replacements.append((item.label, old_val, new_val))
+
+    if replacements:
+        step2_replace(out, replacements=replacements)
+
+    return out
+
+
+# ─── 页面 ─────────────────────────────────────────────
+st.set_page_config(
+    page_title="体检报告生成器",
+    page_icon="📋",
+    layout="centered"
+)
+
+st.title("📋 体检报告生成器")
+st.markdown("填写下方信息（全部为必填），自动生成 Word 体检报告文件。")
+
+with st.form("report_form"):
+    col1, col2 = st.columns(2)
+
+    with col1:
+        name = st.text_input("姓名 *", placeholder="请输入姓名")
+        idcard = st.text_input("身份证号 *", max_chars=18, placeholder="18 位身份证号",
+                               help="年龄从身份证号自动计算")
+
+    with col2:
+        gender = st.radio("性别 *", ["男", "女"], horizontal=True,
+                          help="如填写身份证号，性别会自动匹配")
+        exam_code = st.text_input("体检编码 *", placeholder="如 202607080007")
+
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        height = st.number_input("身高 (cm) *", min_value=100, max_value=250, value=165, step=1)
+    with col_b:
+        weight = st.number_input("体重 (Kg) *", min_value=20, max_value=200, value=65, step=1)
+    with col_c:
+        bmi = st.number_input("BMI *", min_value=10.0, max_value=50.0, value=22.5, format="%.2f")
+
+    col_d, col_e, col_f = st.columns(3)
+    with col_d:
+        sbp = st.number_input("收缩压 (mmHg) *", min_value=80, max_value=220, value=120, step=1)
+    with col_e:
+        dbp = st.number_input("舒张压 (mmHg) *", min_value=40, max_value=140, value=80, step=1)
+    with col_f:
+        phone = st.text_input("联系电话 *", max_chars=11, placeholder="11 位手机号")
+
+    col_g, col_h = st.columns(2)
+    with col_g:
+        exam_date = st.date_input("体检日期 *", value=date.today())
+    with col_h:
+        exam_time = st.time_input("检查时间 *", value=datetime.now().time())
+
+    submitted = st.form_submit_button("🚀 生成体检报告", use_container_width=True)
+
+if submitted:
+    # 所有字段必填校验
+    errors = []
+    if not name or not name.strip():
+        errors.append("姓名")
+    if not idcard or len(idcard.strip()) != 18:
+        errors.append("身份证号（需 18 位）")
+    if not exam_code or not exam_code.strip():
+        errors.append("体检编码")
+    if not phone or len(phone.strip()) < 11:
+        errors.append("联系电话")
+    # 数值字段默认已有值，无需校验
+
+    if errors:
+        st.error(f"⚠️ 请填写以下必填项：{'、'.join(errors)}")
+        st.stop()
+
+    idcard = idcard.strip()
+
+    # 身份证号性别校验
+    detected_gender = detect_gender(idcard)
+    if detected_gender and detected_gender != gender:
+        st.warning(f"⚠️ 选的性别是「{gender}」，但身份证号第 17 位显示为「{detected_gender}」，请确认")
+
+    person = {
+        'name': name.strip(),
+        'idcard': idcard,
+        'number': exam_code.strip(),
+        'gender': gender,
+        'height': str(height),
+        'weight': str(weight),
+        'bmi': f"{bmi:.2f}",
+        'sbp': str(sbp),
+        'dbp': str(dbp),
+        'phone': phone.strip(),
+        'date': exam_date.strftime("%Y-%m-%d"),
+        'time': exam_time.strftime("%H:%M"),
+        'age': calc_age(idcard),
+    }
+
+    with st.spinner(f"正在生成 {person['name']} 的体检报告..."):
+        try:
+            out_path = generate_report(person)
+
+            with open(out_path, "rb") as f:
+                docx_bytes = f.read()
+
+            # 清理临时文件
+            try:
+                os.remove(out_path)
+            except:
+                pass
+
+            filename = f"{person['name']}.docx"
+
+            st.success(f"✅ **{person['name']}** 的体检报告已生成！")
+
+            # 信息摘要
+            gender_text = person.get('gender', '男')
+            st.info(
+                f"📄 **{person['name']}** | {'♂' if gender_text == '男' else '♀'} {gender_text} | "
+                f"{person['age']}岁 | 体检编码: {person['number']}"
+            )
+
+            st.download_button(
+                label="📥 下载 Word 报告",
+                data=docx_bytes,
+                file_name=filename,
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+            )
+
+        except Exception as e:
+            st.error(f"❌ 生成失败: {e}")
+            import traceback
+            st.exception(e)
+
+else:
+    st.markdown("---")
+    st.caption("全部字段均为必填。年龄从身份证号自动计算。")

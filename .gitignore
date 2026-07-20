@@ -1,0 +1,8 @@
+.DS_Store
+.reasonix/
+.codegraph/
+reasonix.toml
+_temp_*
+*backup*
+__pycache__/
+*.pyc
