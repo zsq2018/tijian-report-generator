@@ -109,6 +109,23 @@ def generate_report(person):
     return out
 
 
+def convert_docx_to_pdf(docx_path):
+    """使用 LibreOffice 将 docx 转为 pdf，返回 pdf 路径"""
+    import subprocess, os, random
+    pdf_path = docx_path.replace('.docx', '.pdf')
+    tmp_profile = f"/tmp/lo_{random.randint(10000,99999)}"
+    cmd = [
+        'soffice', '--headless', '--convert-to', 'pdf',
+        '--outdir', os.path.dirname(docx_path),
+        f'-env:UserInstallation=file://{tmp_profile}',
+        docx_path
+    ]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        return None
+    return pdf_path if os.path.exists(pdf_path) else None
+
+
 # ─── 页面 ─────────────────────────────────────────────
 st.set_page_config(
     page_title="体检报告生成器",
@@ -182,16 +199,26 @@ if mode == "📦 批量生成（上传 Excel）":
                     prog.progress((idx) / len(persons), text=f"正在生成 {name}...")
                     try:
                         path = generate_report(p)
+                        # docx
                         with open(path, 'rb') as f:
                             zf.writestr(f"{name}.docx", f.read())
+                        # 尝试转 PDF
+                        try:
+                            pdf_path = convert_docx_to_pdf(path)
+                            if pdf_path:
+                                with open(pdf_path, 'rb') as f:
+                                    zf.writestr(f"{name}.pdf", f.read())
+                                os.remove(pdf_path)
+                        except:
+                            pass
                         os.remove(path)
                     except Exception as e:
                         st.error(f"{name} 生成失败: {e}")
                 prog.progress(1.0, text="完成！")
 
-            st.success(f"✅ 已生成 {len(persons)} 份体检报告！")
+            st.success(f"✅ 已生成 {len(persons)} 份体检报告！（含 PDF）")
             st.download_button(
-                label="📥 下载全部报告（ZIP 打包）",
+                label="📥 下载全部报告（含 Word + PDF）",
                 data=buf.getvalue(),
                 file_name="体检报告_批量.zip",
                 mime="application/zip",
@@ -282,33 +309,49 @@ if submitted:
         try:
             out_path = generate_report(person)
 
-            with open(out_path, "rb") as f:
-                docx_bytes = f.read()
-
-            # 清理临时文件
+            # 尝试转 PDF
+            pdf_path = None
             try:
-                os.remove(out_path)
+                pdf_path = convert_docx_to_pdf(out_path)
             except:
                 pass
 
-            filename = f"{person['name']}.docx"
+            with open(out_path, "rb") as f:
+                docx_bytes = f.read()
+
+            pdf_bytes = None
+            if pdf_path and os.path.exists(pdf_path):
+                with open(pdf_path, "rb") as f:
+                    pdf_bytes = f.read()
+                os.remove(pdf_path)
+            os.remove(out_path)
 
             st.success(f"✅ **{person['name']}** 的体检报告已生成！")
 
-            # 信息摘要
             gender_text = person.get('gender', '男')
             st.info(
                 f"📄 **{person['name']}** | {'♂' if gender_text == '男' else '♀'} {gender_text} | "
                 f"{person['age']}岁 | 体检编码: {person['number']}"
             )
 
-            st.download_button(
-                label="📥 下载 Word 报告",
-                data=docx_bytes,
-                file_name=filename,
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                use_container_width=True,
-            )
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.download_button(
+                    label="📥 下载 Word",
+                    data=docx_bytes,
+                    file_name=f"{person['name']}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True,
+                )
+            if pdf_bytes:
+                with col_b:
+                    st.download_button(
+                        label="📄 下载 PDF",
+                        data=pdf_bytes,
+                        file_name=f"{person['name']}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                    )
 
         except Exception as e:
             st.error(f"❌ 生成失败: {e}")
