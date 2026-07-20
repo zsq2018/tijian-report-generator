@@ -975,22 +975,20 @@ def step2_replace(doc_path, dry_run=False, replacements=None):
                         t_elems[end_t].text = (t_elems[end_t].text or '')[-remain:] if remain > 0 else ''
                     joined = ''.join(t.text or '' for t in t_elems)
                     pos = idx + len(new)
-        # 年龄单体回退：处理那些被拆成单个数字的年龄（如 5 和 2 在不同 <w:t> 中）
+        # 年龄单体回退：已过跨标签替换，此时只处理"年龄X"模式（如"年龄5"在某个<w:t>中）
         if age_old and age_new:
             all_t_elems = []
             for root in [doc._element.body] + [getattr(s, hn)._element for s in doc.sections for hn in ['header','footer','first_page_header','even_page_header','first_page_footer','even_page_footer'] if getattr(s, hn, None)]:
                 all_t_elems.extend(list(root.iter(ns_t)))
-            # 已经过跨标签替换，此时如果还有 age_old 的单个数字残留，说明被分得太散
-            # 尝试找 "年龄X" 模式（X为单个数字，如"年龄5"）
             for t in all_t_elems:
                 if not t.text: continue
-                # 替换 "年龄X" → "年龄新X" 对于单数字年龄
-                for i, ch in enumerate(age_old):
-                    prefix = '年龄' if i == 0 else ''
-                    old_ch = prefix + ch
-                    new_ch = prefix + age_new[i]
-                    if old_ch in t.text:
-                        t.text = t.text.replace(old_ch, new_ch)
+                # 仅替换"年龄X"或"年龄XY"模式的完整年龄数字
+                old_tag = '年龄' + age_old
+                new_tag = '年龄' + age_new
+                if old_tag in t.text:
+                    t.text = t.text.replace(old_tag, new_tag)
+                # 若某个<w:t>只有age_old纯数字（无"年龄"前缀），且已被前面的跨标签替换处理过说明正常
+                # 不再做全局单数字替换，避免误伤文档中其他数字
 
     if dry_run:
         print("🔍 以上为预览，文件未被修改。")
