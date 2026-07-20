@@ -135,6 +135,7 @@ if mode == "📦 批量生成（上传 Excel）":
         headers = [str(h).strip() if h else '' for h in rows[0]]
         col_map = {
             '姓名': 'name', '身份证号': 'idcard', '体检编码': 'number',
+            '性别': 'gender',
             '身高': 'height', '体重': 'weight', '体重指数': 'bmi',
             '收缩压': 'sbp', '舒张压': 'dbp', '电话': 'phone',
             '体检日期': 'date', '检查时间': 'time',
