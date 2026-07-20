@@ -90,8 +90,11 @@ def generate_report(person):
             replacements.append((item.label, old_val + 'cm', new_val + 'cm'))
         elif key == 'weight':
             replacements.append((item.label, old_val + 'Kg', new_val + 'Kg'))
-        elif key in ('sbp', 'dbp'):
+        elif key == 'sbp':
             replacements.append((item.label, old_val + 'mmHg', new_val + 'mmHg'))
+        elif key == 'dbp':
+            replacements.append((item.label, old_val + 'mmHg', new_val + 'mmHg'))
+            replacements.append(('心率', old_val + 'bpm', new_val + 'bpm'))
         else:
             replacements.append((item.label, old_val, new_val))
 
